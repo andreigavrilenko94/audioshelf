@@ -64,9 +64,6 @@
     background:var(--card);color:var(--ink);font-size:16px;margin-bottom:6px}
   .search::placeholder{color:var(--muted)}
   .statsrow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:2px 2px 18px}
-  .pillbtn{display:inline-flex;align-items:center;gap:4px;border:1.5px solid var(--accent);color:var(--accent);
-    border-radius:999px;padding:5px 14px;font-size:13.5px;font-weight:700}
-  .pillbtn:active{background:var(--accent-soft)}
   .stats{color:var(--muted);font-size:13px}
 
   .sect{margin:22px 0 8px;display:flex;align-items:baseline;gap:8px}
@@ -95,7 +92,6 @@
   .btn-accent{background:var(--accent);color:var(--card)}
   .btn[disabled]{opacity:.45;cursor:default}
   .warn{color:var(--muted);font-size:12.5px;text-align:center;margin-top:2px}
-  .leftover{color:var(--danger);font-size:13px}
   .removelink{color:var(--muted);font-size:13px;text-align:center;text-decoration:underline;text-underline-offset:3px;padding:4px}
   .removelink.confirm{color:var(--danger);font-weight:600}
 
@@ -129,10 +125,7 @@
   <input id="search" class="search" type="search" placeholder="Слушал ли я… (поиск по названию)" autocomplete="off">
   <div class="statsrow">
     <span class="stats" id="stats"></span>
-    <span style="display:flex;gap:12px;align-items:center;flex-shrink:0">
-      <button id="btn-add" class="pillbtn">➕ Добавить книгу</button>
-      <button id="btn-export" class="linkbtn">экспорт</button>
-    </span>
+    <button id="btn-export" class="linkbtn">экспорт</button>
   </div>
   <div id="lists"></div>
   <footer>Полка хранится в памяти приложения и пополняется при каждой оценке. Папка на устройстве нужна только для новых книг: оценка удаляет файлы безвозвратно и переименовывает папку в «Название&nbsp;+++++».</footer>
@@ -173,7 +166,7 @@ const state = {
   root:null, saved:null,
   folders:[], shelf:[],
   q:'', expanded:null, sel:0, addSel:0, busy:null, scanId:0,
-  showAll:false, confirmRemove:null
+  showAll:false, confirmRemove:null, doneHandle:null
 };
 
 const $ = id => document.getElementById(id);
@@ -262,11 +255,23 @@ async function scan(){
   if (!state.root) return;
   const id = ++state.scanId;
   const items = [];
+  state.doneHandle = null;
   try {
     for await (const h of state.root.values()){
       if (h.kind !== 'directory') continue;
+      const nm = h.name.trim().toLowerCase();
+      if (nm === 'прочитанное'){ state.doneHandle = h; continue; }
+      if (nm === '!smart audiobook player statistics') continue; /* служебная папка плеера */
       const p = parseName(h.name);
-      items.push({ handle:h, name:h.name, base:p.base, rating:p.rating, files:null, size:null });
+      items.push({ handle:h, name:h.name, base:p.base, rating:p.rating, files:null, size:null, inDone:false });
+    }
+    /* архивные папки внутри ПРОЧИТАННОЕ — вливаются в полку, но не в «Новые книги» */
+    if (state.doneHandle){
+      for await (const h of state.doneHandle.values()){
+        if (h.kind !== 'directory') continue;
+        const p = parseName(h.name);
+        items.push({ handle:h, name:h.name, base:p.base, rating:p.rating, files:0, size:0, inDone:true });
+      }
     }
   } catch(e){
     toast('Нет доступа к папке: ' + e.message, true);
@@ -302,6 +307,7 @@ async function dirStats(h, depth){
 async function computeSizes(id){
   for (const b of state.folders){
     if (id !== state.scanId) return;
+    if (b.inDone) continue;
     try { const r = await dirStats(b.handle, 0); b.files = r.n; b.size = r.s; }
     catch(e){ b.files = 0; b.size = 0; }
   }
@@ -339,10 +345,11 @@ async function rateFolder(f, r){
   state.busy = f.name; render();
   try {
     const newName = f.base + mark(r);
-    if (newName !== f.name){
-      await state.root.getDirectoryHandle(newName, { create:true });
-      await state.root.removeEntry(f.name, { recursive:true });
-    }
+    /* пустая папка-метка создаётся в ПРОЧИТАННОЕ, исходная с файлами удаляется */
+    const done = state.doneHandle || await state.root.getDirectoryHandle('ПРОЧИТАННОЕ', { create:true });
+    state.doneHandle = done;
+    await done.getDirectoryHandle(newName, { create:true });
+    await state.root.removeEntry(f.name, { recursive:true });
     shelfSet(f.base, r, today());
     saveShelf();
     toast('На полке: ' + f.base + mark(r) + ' — ' + LABEL[Math.min(r,5)]);
@@ -353,40 +360,29 @@ async function rateFolder(f, r){
   await scan();
 }
 
-/* Сменить оценку книги на полке; папку переименовываем, только если она пустая */
+async function isEmptyDir(h){
+  for await (const c of h.values()) return false;
+  return true;
+}
+/* Сменить оценку книги на полке; папку-метку переименовываем, только если она пустая */
 async function rateShelf(item, r){
   item.r = r; item.d = today();
   saveShelf();
   const f = state.folders.find(x => x.rating !== 0 && x.base === item.n);
-  if (state.root && f && f.files === 0){
+  if (state.root && f){
+    const parent = f.inDone ? state.doneHandle : state.root;
     const newName = item.n + mark(r);
-    if (newName !== f.name){
+    const empty = f.inDone ? await isEmptyDir(f.handle).catch(() => false) : f.files === 0;
+    if (parent && empty && newName !== f.name){
       try {
-        await state.root.getDirectoryHandle(newName, { create:true });
-        await state.root.removeEntry(f.name, { recursive:true });
+        await parent.getDirectoryHandle(newName, { create:true });
+        await parent.removeEntry(f.name, { recursive:true });
       } catch(e){ toast('Оценка сохранена, но папку переименовать не вышло: ' + e.message, true); }
     }
   }
   toast(item.n + mark(r) + ' — ' + LABEL[Math.min(r,5)]);
   state.expanded = null; state.sel = 0;
   if (state.root) await scan(); else render();
-}
-
-/* Удалить забытые файлы у книги с полки */
-async function cleanShelf(item){
-  const f = state.folders.find(x => x.rating !== 0 && x.base === item.n);
-  if (!f || !state.root) return;
-  state.busy = f.name; render();
-  try {
-    await state.root.removeEntry(f.name, { recursive:true });
-    const keep = item.r ? item.n + mark(item.r) : f.name;
-    await state.root.getDirectoryHandle(keep, { create:true });
-    toast('Файлы удалены: ' + item.n);
-  } catch(e){
-    toast('Не получилось: ' + e.message, true);
-  }
-  state.busy = null; state.expanded = null; state.sel = 0;
-  await scan();
 }
 
 function removeShelf(item){
@@ -457,33 +453,23 @@ function folderCard(f, i){
                (state.sel === -1 ? 'Пропустить' : 'Оценить') + ' и удалить ' +
                (f.files === null ? 'файлы' : fmtFiles(f.files) + ' (' + fmtSize(f.size) + ')') + '</button>';
     h += '<div class="panel">' + optionsHtml(ref) + btn +
-         '<div class="warn">Файлы удаляются безвозвратно, папка станет «' + esc(f.base) + mark(state.sel || 5) + '», книга — на полку.</div></div>';
+         '<div class="warn">Файлы удаляются безвозвратно; в ПРОЧИТАННОЕ появится пустая папка «' + esc(f.base) + mark(state.sel || 5) + '», книга — на полку.</div></div>';
   }
   return h + '</div>';
 }
 function shelfCard(item, i){
   const ref = 's' + i;
   const open = state.expanded === ref;
-  const f = state.folders.find(x => x.rating !== 0 && x.base === item.n);
-  const leftover = f && f.files !== null && f.files > 0;
   let h = '<div class="card">' +
     '<button class="cardhead" data-act="expand" data-ref="' + ref + '">' +
-    '<span class="title">' + esc(item.n) +
-    (leftover ? ' <span class="leftover">⚠ остались файлы</span>' : '') + '</span>' +
+    '<span class="title">' + esc(item.n) + '</span>' +
     (item.d ? '<span class="meta">' + fmtDate(item.d) + '</span>' : '') +
     (item.r > 0 ? '<span class="plus badge">' + pluses(item.r) + '</span>'
       : item.r === -1 ? '<span class="nobadge">– не слушал</span>'
       : '<span class="nobadge">без оценки</span>') +
     '</button>';
   if (open){
-    const busy = f && state.busy === f.name;
-    h += '<div class="panel">';
-    if (leftover){
-      h += '<div class="leftover">В папке ' + fmtFiles(f.files) + ' (' + fmtSize(f.size) + ') — можно удалить, книга останется на полке.</div>' +
-           (busy ? '<button class="btn btn-danger" disabled>Удаляю…</button>'
-                 : '<button class="btn btn-danger" data-act="clean" data-ref="' + ref + '">Удалить файлы</button>');
-    }
-    h += optionsHtml(ref) +
+    h += '<div class="panel">' + optionsHtml(ref) +
       '<button class="btn btn-accent" data-act="rate-shelf" data-ref="' + ref + '"' +
       ((state.sel && state.sel !== item.r) ? '' : ' disabled') + '>' +
       (item.r ? 'Изменить оценку' : 'Поставить оценку') + '</button>' +
@@ -498,7 +484,7 @@ let viewFolders = [], viewShelf = [];
 function render(){
   renderStats();
   const q = state.q.trim().toLowerCase();
-  viewFolders = state.folders.filter(f => !f.rating && (!q || f.base.toLowerCase().includes(q)));
+  viewFolders = state.folders.filter(f => !f.rating && !f.inDone && (!q || f.base.toLowerCase().includes(q)));
   viewShelf = state.shelf
     .filter(x => !q || x.n.toLowerCase().includes(q))
     .sort((a,b) => {
@@ -565,8 +551,6 @@ $('lists').addEventListener('click', e => {
     if (state.sel) rateFolder(t.obj, state.sel);
   } else if (act === 'rate-shelf'){
     if (state.sel && state.sel !== t.obj.r) rateShelf(t.obj, state.sel);
-  } else if (act === 'clean'){
-    cleanShelf(t.obj);
   } else if (act === 'remove'){
     if (state.confirmRemove === t.obj.n) removeShelf(t.obj);
     else { state.confirmRemove = t.obj.n; render(); }
@@ -599,7 +583,6 @@ function openAdd(prefill){
   $('add-overlay').hidden = false;
   if (!prefill) $('add-name').focus();
 }
-$('btn-add').addEventListener('click', () => openAdd(state.q.trim()));
 $('btn-add-cancel').addEventListener('click', () => { $('add-overlay').hidden = true; });
 $('add-overlay').addEventListener('click', e => { if (e.target === $('add-overlay')) $('add-overlay').hidden = true; });
 $('add-opts').addEventListener('click', e => {
