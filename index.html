@@ -63,7 +63,10 @@
   .search{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:12px;
     background:var(--card);color:var(--ink);font-size:16px;margin-bottom:6px}
   .search::placeholder{color:var(--muted)}
-  .statsrow{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:2px 2px 18px}
+  .statsrow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:2px 2px 18px}
+  .pillbtn{display:inline-flex;align-items:center;gap:4px;border:1.5px solid var(--accent);color:var(--accent);
+    border-radius:999px;padding:5px 14px;font-size:13.5px;font-weight:700}
+  .pillbtn:active{background:var(--accent-soft)}
   .stats{color:var(--muted);font-size:13px}
 
   .sect{margin:22px 0 8px;display:flex;align-items:baseline;gap:8px}
@@ -126,8 +129,8 @@
   <input id="search" class="search" type="search" placeholder="Слушал ли я… (поиск по названию)" autocomplete="off">
   <div class="statsrow">
     <span class="stats" id="stats"></span>
-    <span style="display:flex;gap:14px;flex-shrink:0">
-      <button id="btn-add" class="linkbtn">+ добавить</button>
+    <span style="display:flex;gap:12px;align-items:center;flex-shrink:0">
+      <button id="btn-add" class="pillbtn">➕ Добавить книгу</button>
       <button id="btn-export" class="linkbtn">экспорт</button>
     </span>
   </div>
