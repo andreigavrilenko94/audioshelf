@@ -101,8 +101,9 @@
 
   footer{margin-top:34px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:12px}
 
-  #export-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
-  #export-overlay[hidden]{display:none}
+  #export-overlay,#add-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
+  #export-overlay[hidden],#add-overlay[hidden]{display:none}
+  #add-opts{display:flex;flex-direction:column;gap:8px;max-height:45vh;overflow-y:auto}
   .export-card{background:var(--card);border-radius:14px;padding:16px;max-width:520px;width:100%;display:flex;flex-direction:column;gap:10px}
   .export-card h3{margin:0;font-size:16px}
   .export-card textarea{width:100%;height:40vh;border:1px solid var(--line);border-radius:10px;background:var(--bg);
@@ -125,7 +126,10 @@
   <input id="search" class="search" type="search" placeholder="Слушал ли я… (поиск по названию)" autocomplete="off">
   <div class="statsrow">
     <span class="stats" id="stats"></span>
-    <button id="btn-export" class="linkbtn">экспорт</button>
+    <span style="display:flex;gap:14px;flex-shrink:0">
+      <button id="btn-add" class="linkbtn">+ добавить</button>
+      <button id="btn-export" class="linkbtn">экспорт</button>
+    </span>
   </div>
   <div id="lists"></div>
   <footer>Полка хранится в памяти приложения и пополняется при каждой оценке. Папка на устройстве нужна только для новых книг: оценка удаляет файлы безвозвратно и переименовывает папку в «Название&nbsp;+++++».</footer>
@@ -141,6 +145,18 @@
     </div>
   </div>
 </div>
+
+<div id="add-overlay" hidden>
+  <div class="export-card">
+    <h3>Добавить книгу на полку</h3>
+    <input id="add-name" class="search" type="text" placeholder="Название книги" autocomplete="off" style="margin-bottom:0">
+    <div id="add-opts"></div>
+    <div class="export-row">
+      <button class="btn btn-accent" id="btn-add-confirm">Добавить без оценки</button>
+      <button class="btn" id="btn-add-cancel" style="border:1px solid var(--line)">Отмена</button>
+    </div>
+  </div>
+</div>
 <div id="toast" role="status"></div>
 
 <script>
@@ -153,7 +169,7 @@ const state = {
   fsa: typeof window.showDirectoryPicker === 'function',
   root:null, saved:null,
   folders:[], shelf:[],
-  q:'', expanded:null, sel:0, busy:null, scanId:0,
+  q:'', expanded:null, sel:0, addSel:0, busy:null, scanId:0,
   showAll:false, confirmRemove:null
 };
 
@@ -494,6 +510,9 @@ function render(){
     h += viewFolders.length
       ? viewFolders.map((f,i) => folderCard(f, i)).join('')
       : '<div class="empty">' + (q ? 'Среди новых книг ничего нет.' : 'В папке нет книг без оценки.') + '</div>';
+  } else if (state.fsa && !q){
+    h += '<div class="sect"><h2>Новые книги</h2></div>';
+    h += '<div class="empty">Появятся здесь, когда подключишь папку с книгами — кнопка «📁» сверху. Оценка удалит файлы и перенесёт книгу на полку.</div>';
   }
 
   h += '<div class="sect"><h2>Полка</h2><span class="cnt">' + viewShelf.length + '</span></div>';
@@ -504,6 +523,7 @@ function render(){
       h += '<button class="showall" data-act="showall">Показать все ' + viewShelf.length + '</button>';
   } else {
     h += '<div class="empty">' + (q ? 'Ничего не нашлось — похоже, эту книгу ты ещё не слушал.' : 'Полка пуста.') + '</div>';
+    if (q) h += '<button class="showall" data-act="add-new">➕ Добавить «' + esc(state.q.trim()) + '» на полку</button>';
   }
   $('lists').innerHTML = h;
 }
@@ -526,6 +546,7 @@ $('lists').addEventListener('click', e => {
   if (!el || state.busy) return;
   const act = el.dataset.act;
   if (act === 'showall'){ state.showAll = true; render(); return; }
+  if (act === 'add-new'){ openAdd(state.q.trim()); return; }
   const ref = el.dataset.ref;
   const t = refTarget(ref);
   if (!t.obj) return;
@@ -549,6 +570,58 @@ $('lists').addEventListener('click', e => {
   }
 });
 $('search').addEventListener('input', e => { state.q = e.target.value; state.expanded = null; render(); });
+
+/* ---------- ручное добавление книги ---------- */
+function updateAddLabel(){
+  $('btn-add-confirm').textContent =
+    state.addSel === 0 ? 'Добавить без оценки'
+    : state.addSel === -1 ? 'Добавить: – не слушал'
+    : 'Добавить: ' + pluses(state.addSel) + ' (' + LABEL[state.addSel] + ')';
+}
+function renderAddOpts(){
+  let h = '';
+  for (let r = 1; r <= 5; r++){
+    h += '<button class="opt" data-r="' + r + '" aria-pressed="' + (state.addSel === r) + '">' +
+         '<span class="plus">' + pluses(r) + '</span><span class="lbl">' + LABEL[r] + '</span></button>';
+  }
+  h += '<button class="opt" data-r="-1" aria-pressed="' + (state.addSel === -1) + '">' +
+       '<span class="plus dash">–</span><span class="lbl">' + LABEL[-1] + '</span></button>';
+  $('add-opts').innerHTML = h;
+  updateAddLabel();
+}
+function openAdd(prefill){
+  state.addSel = 0;
+  $('add-name').value = prefill || '';
+  renderAddOpts();
+  $('add-overlay').hidden = false;
+  if (!prefill) $('add-name').focus();
+}
+$('btn-add').addEventListener('click', () => openAdd(state.q.trim()));
+$('btn-add-cancel').addEventListener('click', () => { $('add-overlay').hidden = true; });
+$('add-overlay').addEventListener('click', e => { if (e.target === $('add-overlay')) $('add-overlay').hidden = true; });
+$('add-opts').addEventListener('click', e => {
+  const el = e.target.closest('[data-r]');
+  if (!el) return;
+  const r = +el.dataset.r;
+  state.addSel = (state.addSel === r) ? 0 : r;
+  renderAddOpts();
+});
+$('add-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('btn-add-confirm').click(); });
+$('btn-add-confirm').addEventListener('click', () => {
+  const raw = $('add-name').value.trim().replace(/\s+/g, ' ');
+  if (!raw){ toast('Напиши название книги', true); return; }
+  /* если в названии набраны плюсики или 0 — понимаем их как оценку */
+  const p = parseName(raw);
+  const name = p.rating !== 0 ? p.base : raw;
+  const r = state.addSel !== 0 ? state.addSel : p.rating;
+  if (shelfFind(name)){ toast('«' + name + '» уже на полке — найди её поиском', true); return; }
+  state.shelf.push({ n: name, r, d: today() });
+  saveShelf();
+  $('add-overlay').hidden = true;
+  state.q = ''; $('search').value = '';
+  render();
+  toast('На полке: ' + name + (r ? mark(r) + ' — ' + LABEL[Math.min(r,5)] : ''));
+});
 
 $('btn-export').addEventListener('click', () => {
   const lines = [...state.shelf]
