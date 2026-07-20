@@ -609,10 +609,25 @@ $('btn-add-confirm').addEventListener('click', () => {
   toast('На полке: ' + name + (r ? mark(r) + ' — ' + LABEL[Math.min(r,5)] : ''));
 });
 
-$('btn-export').addEventListener('click', () => {
+$('btn-export').addEventListener('click', async () => {
   const lines = [...state.shelf]
     .sort((a,b) => a.n.localeCompare(b.n, 'ru', {sensitivity:'base'}))
     .map(x => x.n + mark(x.r));
+  if (state.root){
+    /* пишем «Реестр книг.txt» в корень папки, целиком заменяя старый */
+    try {
+      const fh = await state.root.getFileHandle('Реестр книг.txt', { create:true });
+      const w = await fh.createWritable();
+      await w.write(lines.join('\r\n'));
+      await w.close();
+      const d = lines.length % 10, hh = lines.length % 100;
+      const word = (d === 1 && hh !== 11) ? 'книга' : (d >= 2 && d <= 4 && (hh < 12 || hh > 14)) ? 'книги' : 'книг';
+      toast('«Реестр книг.txt» обновлён: ' + lines.length + ' ' + word);
+      return;
+    } catch(e){
+      toast('Записать файл не вышло (' + e.message + ') — показываю список', true);
+    }
+  }
   $('export-text').value = lines.join('\n');
   $('export-overlay').hidden = false;
 });
