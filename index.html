@@ -100,8 +100,8 @@
 
   footer{margin-top:34px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:12px}
 
-  #export-overlay,#add-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
-  #export-overlay[hidden],#add-overlay[hidden]{display:none}
+  #export-overlay,#add-overlay,#sync-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
+  #export-overlay[hidden],#add-overlay[hidden],#sync-overlay[hidden]{display:none}
   #add-opts{display:flex;flex-direction:column;gap:8px;max-height:45vh;overflow-y:auto}
   .export-card{background:var(--card);border-radius:14px;padding:16px;max-width:520px;width:100%;display:flex;flex-direction:column;gap:10px}
   .export-card h3{margin:0;font-size:16px}
@@ -125,7 +125,10 @@
   <input id="search" class="search" type="search" placeholder="Слушал ли я… (поиск по названию)" autocomplete="off">
   <div class="statsrow">
     <span class="stats" id="stats"></span>
-    <button id="btn-export" class="linkbtn">экспорт</button>
+    <span style="display:flex;gap:14px;flex-shrink:0">
+      <button id="btn-sync" class="linkbtn">синхронизация</button>
+      <button id="btn-export" class="linkbtn">экспорт</button>
+    </span>
   </div>
   <div id="lists"></div>
   <footer>Полка хранится в памяти приложения и пополняется при каждой оценке. Папка на устройстве нужна только для новых книг: оценка удаляет файлы безвозвратно и переименовывает папку в «Название&nbsp;+++++».</footer>
@@ -150,6 +153,18 @@
     <div class="export-row">
       <button class="btn btn-accent" id="btn-add-confirm">Добавить без оценки</button>
       <button class="btn" id="btn-add-cancel" style="border:1px solid var(--line)">Отмена</button>
+    </div>
+  </div>
+</div>
+<div id="sync-overlay" hidden>
+  <div class="export-card">
+    <h3>Синхронизация с Google-таблицей</h3>
+    <div class="stats" id="sync-status"></div>
+    <input id="sync-key" class="search" type="text" placeholder="Секретный ключ" autocomplete="off"
+           style="margin-bottom:0;font-family:var(--mono);font-size:13px">
+    <div class="export-row">
+      <button class="btn btn-accent" id="btn-sync-save">Сохранить</button>
+      <button class="btn" id="btn-sync-close" style="border:1px solid var(--line)">Закрыть</button>
     </div>
   </div>
 </div>
@@ -352,6 +367,7 @@ async function rateFolder(f, r){
     await state.root.removeEntry(f.name, { recursive:true });
     shelfSet(f.base, r, today());
     saveShelf();
+    syncPush();
     toast('На полке: ' + f.base + mark(r) + ' — ' + LABEL[Math.min(r,5)]);
   } catch(e){
     toast('Не получилось: ' + e.message, true);
@@ -368,6 +384,7 @@ async function isEmptyDir(h){
 async function rateShelf(item, r){
   item.r = r; item.d = today();
   saveShelf();
+  syncPush();
   const f = state.folders.find(x => x.rating !== 0 && x.base === item.n);
   if (state.root && f){
     const parent = f.inDone ? state.doneHandle : state.root;
@@ -603,10 +620,45 @@ $('btn-add-confirm').addEventListener('click', () => {
   if (shelfFind(name)){ toast('«' + name + '» уже на полке — найди её поиском', true); return; }
   state.shelf.push({ n: name, r, d: today() });
   saveShelf();
+  syncPush();
   $('add-overlay').hidden = true;
   state.q = ''; $('search').value = '';
   render();
   toast('На полке: ' + name + (r ? mark(r) + ' — ' + LABEL[Math.min(r,5)] : ''));
+});
+
+/* ---------- синхронизация с Google-таблицей: только отправка, ответы не читаются ---------- */
+const SYNC_URL = 'https://script.google.com/macros/s/AKfycbxG2-bcXiXjyRvC09OLqccOjRHhf2t1C2aI5JKMZMwetcFvkAaZrlP0FGfJjfeGpCPLEg/exec';
+function syncKey(){ try { return localStorage.getItem('synckey') || ''; } catch(e){ return ''; } }
+async function syncPush(){
+  const key = syncKey();
+  if (!key) return;
+  /* свежая запись + всё за последний месяц: потерянные отправки доедут сами */
+  const cutoff = new Date(Date.now() - 31 * 86400000).toISOString().slice(0, 10);
+  const items = state.shelf
+    .filter(x => x.d && x.d >= cutoff)
+    .slice(0, 500)
+    .map(x => ({ n: x.n, r: x.r, d: x.d }));
+  if (!items.length) return;
+  try {
+    await fetch(SYNC_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ key, items }) });
+  } catch(e){ /* нет сети — доедет при следующем открытии */ }
+}
+$('btn-sync').addEventListener('click', () => {
+  $('sync-key').value = syncKey();
+  $('sync-status').textContent = syncKey()
+    ? 'Включена: записи за последний месяц уходят в таблицу при каждой оценке и при открытии приложения.'
+    : 'Выключена. Вставь секретный ключ, чтобы включить.';
+  $('sync-overlay').hidden = false;
+});
+$('btn-sync-close').addEventListener('click', () => { $('sync-overlay').hidden = true; });
+$('sync-overlay').addEventListener('click', e => { if (e.target === $('sync-overlay')) $('sync-overlay').hidden = true; });
+$('btn-sync-save').addEventListener('click', () => {
+  const v = $('sync-key').value.trim();
+  try { if (v) localStorage.setItem('synckey', v); else localStorage.removeItem('synckey'); } catch(e){}
+  $('sync-overlay').hidden = true;
+  toast(v ? 'Синхронизация включена' : 'Синхронизация выключена');
+  if (v) syncPush();
 });
 
 $('btn-export').addEventListener('click', async () => {
@@ -649,6 +701,7 @@ async function init(){
   mergeSeed();
   renderFolderbar();
   render();
+  syncPush();
   if (!state.fsa) return;
   let h = null;
   try { h = await idb.get('root'); } catch(e){}
